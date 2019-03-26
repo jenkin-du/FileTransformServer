@@ -30,8 +30,6 @@ public class TransportFrameEncoder extends MessageToByteEncoder<Message> {
 	@Override
 	protected void encode(ChannelHandlerContext channelHandlerContext, Message message, ByteBuf out) throws Exception {
 
-		System.out.println("TransportFrameEncoder encode " + message);
-
 		boolean hasFile = message.isHasFileData();
 		if (hasFile) {
 			String filePath = message.getFile().getFilePath();
