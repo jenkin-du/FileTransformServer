@@ -55,7 +55,7 @@ public class TransportFrameEncoder extends MessageToByteEncoder<Message> {
 				if (offset + SEGMENT_LENGTH >= fileLength) {
 
 					long segmentLength = fileLength - offset;
-					if (segmentLength > 0) {
+					if (segmentLength >= 0) {
 						message.getFile().setSegmentLength(segmentLength);
 						message.setAction("fileDownloadAck");
 						message.addParam("ack",Message.Ack.FILE_READY);
