@@ -55,7 +55,7 @@ public class FileServer {
 	private int listenPort = 20001;
 
 	// 文件监听器
-	private FileTransportListener mFileListener = new FileTransportListener() {
+	private FileTransportListener fileListener = new FileTransportListener() {
 
 		@Override
 		public void onProgress(String fileId, double progress, long totalSize) {
@@ -72,7 +72,7 @@ public class FileServer {
 
 		@Override
 		public void onExceptionCaught(String exception) {
-			
+
 		}
 
 	};
@@ -104,7 +104,7 @@ public class FileServer {
 							ch.pipeline().addLast(new IdleStateHandler(0, 0, 60));
 							// 自己实现的帧解码器,继承了ChannelInboundHandlerAdapter,入站处理器
 							ch.pipeline().addLast("decoder",
-									new TransportFrameDecoder(transportServerHandler, mFileListener));
+									new TransportFrameDecoder(transportServerHandler, fileListener));
 							// 自己实现的msg编码器,继承了MessageToByteEncoder,出站处理器
 							ch.pipeline().addLast("encoder", new TransportFrameEncoder());
 

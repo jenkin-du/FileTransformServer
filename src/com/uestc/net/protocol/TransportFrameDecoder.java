@@ -56,7 +56,7 @@ public class TransportFrameDecoder extends ChannelInboundHandlerAdapter {
 	private byte[] remainingByte;// 本次没有读完的数据
 
 	// 文件传输时写入的临时文件
-	private File mTempFile;
+	private File tempFile;
 	private RandomAccessFile randomAccessFile;
 
 	// 业务逻辑处理器
@@ -115,13 +115,13 @@ public class TransportFrameDecoder extends ChannelInboundHandlerAdapter {
 
 				msg = JSON.parseObject(jsonMsg, Message.class);
 				// 有文件传输
-				if (msg.isHasFile()) {
+				if (msg.isHasFileData()) {
 
-					fileSize = Long.parseLong(msg.getParams().get("fileLength"));
-					fileOffset = Long.parseLong(msg.getParam("fileOffset"));
-					fileLeftSize = fileSize - fileOffset;
-					segmentLeftSize = Long.parseLong(msg.getParam("segmentLength"));
-					hasFile = true;
+					fileSize = msg.getFile().getFileLength();
+                    fileOffset = msg.getFile().getFileOffset();
+                    fileLeftSize = fileSize - fileOffset;
+                    segmentLeftSize = msg.getFile().getSegmentLength();
+                    hasFile = true;
 
 					// 没有文件传输
 				} else {
@@ -177,13 +177,13 @@ public class TransportFrameDecoder extends ChannelInboundHandlerAdapter {
 
 					msg = JSON.parseObject(jsonMessage, Message.class);
 					// 有文件传输
-					if (msg.isHasFile()) {
+					if (msg.isHasFileData()) {
 
-						fileSize = Long.parseLong(msg.getParams().get("fileLength"));
-						fileOffset = Long.parseLong(msg.getParam("fileOffset"));
-						fileLeftSize = fileSize - fileOffset;
-						segmentLeftSize = Long.parseLong(msg.getParam("segmentLength"));
-						hasFile = true;
+						fileSize = msg.getFile().getFileLength();
+	                    fileOffset = msg.getFile().getFileOffset();
+	                    fileLeftSize = fileSize - fileOffset;
+	                    segmentLeftSize = msg.getFile().getSegmentLength();
+	                    hasFile = true;
 
 						// 没有文件传输
 					} else {
@@ -204,11 +204,11 @@ public class TransportFrameDecoder extends ChannelInboundHandlerAdapter {
 
 			if (randomAccessFile == null) {
 
-				String tempFilePath = SharedPreferenceUtil.get(msg.getParam("fileName"));
+				String tempFilePath = SharedPreferenceUtil.get(msg.getFile().getFileName());
 				if (tempFilePath != null) {
-					mTempFile = new File(tempFilePath);
-					if (mTempFile.exists()) {
-						randomAccessFile = new RandomAccessFile(mTempFile, "rw");
+					tempFile = new File(tempFilePath);
+					if (tempFile.exists()) {
+						randomAccessFile = new RandomAccessFile(tempFile, "rw");
 						// 对文件进行加锁
 						lock = randomAccessFile.getChannel().tryLock();
 						if (lock == null) {
@@ -218,7 +218,7 @@ public class TransportFrameDecoder extends ChannelInboundHandlerAdapter {
 							return;
 						}
 					} else {
-						SharedPreferenceUtil.remove(msg.getParam("fileName"));
+						SharedPreferenceUtil.remove(msg.getFile().getFileName());
 
 						// 生成临时文件路径
 						createTempPath();
@@ -274,7 +274,7 @@ public class TransportFrameDecoder extends ChannelInboundHandlerAdapter {
 					fileLeftSize -= segmentLeftSize;
 					if (fileLeftSize == 0) {
 						// 检查文件是否完整
-						checkFileMD5(ctx, msg, mTempFile);
+						checkFileMD5(ctx, msg, tempFile);
 					} else {
 						// 完成数据传输，处理业务逻辑
 						serverHandler.handleMessage(ctx, msg);
@@ -332,7 +332,7 @@ public class TransportFrameDecoder extends ChannelInboundHandlerAdapter {
 					fileLeftSize -= segmentLeftSize;
 					if (fileLeftSize == 0) {
 						// 检查文件是否完整
-						checkFileMD5(ctx, msg, mTempFile);
+						checkFileMD5(ctx, msg, tempFile);
 					} else {
 						// 完成数据传输，处理业务逻辑
 						serverHandler.handleMessage(ctx, msg);
@@ -374,9 +374,8 @@ public class TransportFrameDecoder extends ChannelInboundHandlerAdapter {
 	 */
 	private void handleFileDownLoadSegmentResult(ChannelHandlerContext ctx, Message message) {
 
-		message.setType(Message.Type.RESPONSE);
 		message.setAction("fileDownloadSegmentAck");
-		message.setHasFile(true);
+		message.setHasFileData(true);
 
 		ctx.channel().writeAndFlush(message).addListener(new ChannelFutureListener() {
 			@Override
@@ -402,11 +401,11 @@ public class TransportFrameDecoder extends ChannelInboundHandlerAdapter {
 		if (!tempFolder.exists()) {
 			tempFolder.mkdir();
 		}
-		mTempFile = new File(tempFolder.getAbsolutePath() + "\\" + uuid + ".tp");
-		mTempFile.createNewFile();
-		randomAccessFile = new RandomAccessFile(mTempFile, "rw");
+		tempFile = new File(tempFolder.getAbsolutePath() + "\\" + uuid + ".tp");
+		tempFile.createNewFile();
+		randomAccessFile = new RandomAccessFile(tempFile, "rw");
 		// 保存临时文件路径
-		SharedPreferenceUtil.save(msg.getParam("fileName"), mTempFile.getAbsolutePath());
+		SharedPreferenceUtil.save(msg.getFile().getFileName(), tempFile.getAbsolutePath());
 
 	}
 
@@ -418,13 +417,13 @@ public class TransportFrameDecoder extends ChannelInboundHandlerAdapter {
 			fis = new FileInputStream(tempFile);
 
 			String md5 = DigestUtils.md5Hex(fis);
-			String fileMD5 = msg.getParam("fileMD5");
+			String fileMD5 = msg.getFile().getMd5();
 
 			if (md5.equals(fileMD5)) {
 				// 数据传输进度
 				fileListener.onProgress("", 1, fileSize);
 				// 完成数据读写
-				fileListener.onComplete("", true, mTempFile.getAbsolutePath());
+				fileListener.onComplete("", true, tempFile.getAbsolutePath());
 				// 完成数据传输，处理业务逻辑
 				serverHandler.handleMessage(ctx, msg);
 				// 删除临时文件记录
@@ -434,19 +433,17 @@ public class TransportFrameDecoder extends ChannelInboundHandlerAdapter {
 				// 数据传输进度
 				fileListener.onProgress("", 0, fileLeftSize);
 				// 完成数据读写
-				fileListener.onComplete("", false, mTempFile.getAbsolutePath());
+				fileListener.onComplete("", false, tempFile.getAbsolutePath());
 				// 重传
 				Message message = new Message();
-				message.setType(Message.Type.REQUEST);
 				message.setAction("fileUploadResult");
 				message.addParam("result", Message.Result.FILE_MD5_WRONG);
-				message.addParam("fileName", msg.getParam("fileName"));
-				message.addParam("filePath", msg.getParam("filePath"));
+				message.setFile(msg.getFile());
 
 				// 删除临时文件
 				tempFile.delete();
 				// 删除临时文件记录
-				SharedPreferenceUtil.remove(msg.getParam("fileName"));
+				SharedPreferenceUtil.remove(msg.getFile().getFileName());
 				// 下载错误，响应服务器
 				ctx.channel().writeAndFlush(message);
 			}
@@ -535,7 +532,7 @@ public class TransportFrameDecoder extends ChannelInboundHandlerAdapter {
 
 		remainingByte = null;
 		// 文件传输时写入的临时文件
-		mTempFile = null;
+		tempFile = null;
 		randomAccessFile = null;
 
 		// 消息

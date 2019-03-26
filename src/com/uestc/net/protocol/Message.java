@@ -13,99 +13,187 @@ import java.util.HashMap;
  */
 public class Message {
 
-	// 消息的动作
-	private String action;
+	//消息的动作
+    private String action;
 
-	// 消息类型
-	private int type;
 
-	// 是否附带文件
-	private boolean hasFile = false;
+    //是否附带文件数据
+    private boolean hasFileData = false;
 
-	// 传递的参数
-	private HashMap<String, String> params = new HashMap<>();
+    //文件
+    private File file;
 
-	// 消息类型
-	public static class Type {
 
-		public static final int REQUEST = 1;// 请求
-		public static final int RESPONSE = 2;// 响应
-	}
+    //传递其他与业务相关的的参数
+    private HashMap<String, String> params = new HashMap<>();
 
-	/**
-	 * 结果类型
-	 */
-	public static class Result {
 
-		public static final String SUCCESS = "success";
+    /**
+     * 结果类型
+     */
+    public static class Result {
 
-		public static final String FILE_MD5_WRONG = "file md5 is wrong";
-	}
+        public static final String SUCCESS = "success";
 
-	/**
-	 * 应答类型
-	 */
-	public static class Ack {
-		// 文件准备就绪
-		public static final String FILE_READY = "file is ready";
-		// 文件被加锁，不可写
-		public static final String FILE_LOCKED = "file is locked";
-		// 文件不存在
-		public static final String FILE_NOT_EXIST = "file is not exist";
+        public static final String FILE_MD5_WRONG = "file md5 is wrong";
+    }
 
-	}
+    /**
+     * 应答类型
+     */
+    public static class Ack {
+        //文件准备就绪
+        public static final String FILE_READY = "file is ready";
+        //文件被加锁，不可写
+        public static final String FILE_LOCKED = "file is locked";
+        // 文件不存在
+        public static final String FILE_NOT_EXIST = "file is not exist";
+        //文件加密错误，重传
+		public static final String FILE_ENCODE_WRONG = "file encode wrong";
+    }
 
-	/**
-	 * 添加参数
-	 */
-	public void addParam(String key, String value) {
-		params.put(key, value);
-	}
+    /**
+     * 添加参数
+     */
+    public void addParam(String key, String value) {
+        params.put(key, value);
+    }
 
-	/**
-	 * 获取参数
-	 * 
-	 * @return
-	 */
-	public String getParam(String key) {
-		return params.get(key);
-	}
+    /**
+     * 获取参数
+     *
+     * @return actionParam
+     */
+    public String getParam(String key) {
+        return params.get(key);
+    }
 
-	public HashMap<String, String> getParams() {
-		return params;
-	}
 
-	public int getType() {
-		return type;
-	}
+    public HashMap<String, String> getParams() {
+        return params;
+    }
 
-	public void setType(int type) {
-		this.type = type;
-	}
 
-	public void setParams(HashMap<String, String> params) {
-		this.params = params;
-	}
+    public void setParams(HashMap<String, String> params) {
+        this.params = params;
+    }
 
-	public String getAction() {
-		return action;
-	}
+    public String getAction() {
+        return action;
+    }
 
-	public void setAction(String action) {
-		this.action = action;
-	}
+    public void setAction(String action) {
+        this.action = action;
+    }
 
-	public boolean isHasFile() {
-		return hasFile;
-	}
+    public boolean isHasFileData() {
+        return hasFileData;
+    }
 
-	public void setHasFile(boolean hasFile) {
-		this.hasFile = hasFile;
-	}
+    public void setHasFileData(boolean hasFileData) {
+        this.hasFileData = hasFileData;
+    }
 
-	@Override
-	public String toString() {
-		return "Message{" + "action='" + action + '\'' + ", type=" + type + ", hasFile=" + hasFile + ", params="
-				+ params + '}';
-	}
+    public File getFile() {
+        return file;
+    }
+
+    public void setFile(File file) {
+        this.file = file;
+    }
+
+
+    @Override
+    public String toString() {
+        return "Message{" +
+                "action='" + action + '\'' +
+                ", hasFileData=" + hasFileData +
+                ", file=" + file +
+                ", params=" + params +
+                '}';
+    }
+
+    /**
+     * 消息携带的文件
+     */
+    public static class File {
+
+        public File() {
+
+        }
+
+        //文件名
+        private String fileName;
+        //文件路径
+        private String filePath;
+        //MD5
+        private String md5;
+        //文件长度
+        private long fileLength;
+        //已传输的文件偏移量
+        private long fileOffset;
+        //本次传输的文件大小（段长度）
+        private long segmentLength;
+
+        public String getFileName() {
+            return fileName;
+        }
+
+        public void setFileName(String fileName) {
+            this.fileName = fileName;
+        }
+
+        public String getFilePath() {
+            return filePath;
+        }
+
+        public void setFilePath(String filePath) {
+            this.filePath = filePath;
+        }
+
+        public String getMd5() {
+            return md5;
+        }
+
+        public void setMd5(String md5) {
+            this.md5 = md5;
+        }
+
+        public long getFileLength() {
+            return fileLength;
+        }
+
+        public void setFileLength(long fileLength) {
+            this.fileLength = fileLength;
+        }
+
+        public long getFileOffset() {
+            return fileOffset;
+        }
+
+        public void setFileOffset(long fileOffset) {
+            this.fileOffset = fileOffset;
+        }
+
+        public long getSegmentLength() {
+            return segmentLength;
+        }
+
+        public void setSegmentLength(long segmentLength) {
+            this.segmentLength = segmentLength;
+        }
+
+        @Override
+        public String toString() {
+            return "File{" +
+                    "fileName='" + fileName + '\'' +
+                    ", filePath='" + filePath + '\'' +
+                    ", md5='" + md5 + '\'' +
+                    ", fileLength=" + fileLength +
+                    ", fileOffset=" + fileOffset +
+                    ", segmentLength=" + segmentLength +
+                    '}';
+        }
+    }
+	
 }

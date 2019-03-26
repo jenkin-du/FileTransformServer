@@ -1,7 +1,6 @@
 package com.uestc.net.api;
 
 import java.io.File;
-import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.RandomAccessFile;
 import java.nio.channels.FileLock;
@@ -10,7 +9,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.uestc.net.protocol.Message;
-import com.uestc.net.protocol.MessageHandler;
 import com.uestc.net.util.SharedPreferenceUtil;
 
 import io.netty.channel.Channel;
@@ -21,13 +19,12 @@ import io.netty.channel.ChannelHandlerContext;
 /**
  * 服务器使用
  */
-public class TransportServerHandler implements MessageHandler {
+public class TransportServerHandler {
 
-	private static final String TAG = "NewTransportRequest";
+	private static final String TAG = "TransportServerHandler";
 
 	private static final Logger LOGGER = LoggerFactory.getLogger(TransportServerHandler.class);
 
-	@Override
 	public void handleMessage(ChannelHandlerContext ctx, Message msg) {
 
 		String action = msg.getAction();
@@ -68,30 +65,27 @@ public class TransportServerHandler implements MessageHandler {
 
 		System.out.println("handleFileUploadSegment " + msg);
 
-		long fileLength = Long.parseLong(msg.getParam("fileLength"));
-		long fileOffset = Long.parseLong(msg.getParam("fileOffset"));
-		long segmentLength = Long.parseLong(msg.getParam("segmentLength"));
+		long fileLength = msg.getFile().getFileLength();
+		long fileOffset = msg.getFile().getFileOffset();
+		long segmentLength = msg.getFile().getSegmentLength();
 
 		if (fileOffset + segmentLength < fileLength) {
 			Message rm = new Message();
-			rm.setType(Message.Type.RESPONSE);
 			rm.setAction("fileUploadSegmentResult");
 			rm.addParam("result", "success");
-			rm.addParam("fileName", msg.getParam("fileName"));
-			rm.addParam("filePath", msg.getParam("filePath"));
-			rm.addParam("fileLength", msg.getParam("fileLength"));
-			rm.addParam("fileOffset", (fileOffset + segmentLength) + "");
+
+			Message.File file = msg.getFile();
+			file.setFileOffset(fileOffset + segmentLength);
+			rm.setFile(file);
 
 			response(rm, ctx.channel());
 		} else {
 			Message rm = new Message();
-			rm.setType(Message.Type.RESPONSE);
 			rm.setAction("fileUploadResult");
 			rm.addParam("result", Message.Result.SUCCESS);
 
 			response(rm, ctx.channel());
 		}
-
 	}
 
 	/**
@@ -105,7 +99,6 @@ public class TransportServerHandler implements MessageHandler {
 		String tempPath = SharedPreferenceUtil.get(msg.getParam("fileName"));
 		System.out.println("handleFileUploadRequest tempPath " + tempPath);
 		// 获取已上传的内容，
-		long offset = 0;
 		if (tempPath != null) {
 			File file = new File(tempPath);
 			if (file.exists()) {
@@ -123,14 +116,11 @@ public class TransportServerHandler implements MessageHandler {
 						raf.close();
 
 						Message rm = new Message();
-						rm.setType(Message.Type.RESPONSE);
 						rm.setAction("fileUploadAck");
 						rm.addParam("ack", Message.Ack.FILE_READY);
-						rm.addParam("fileName", msg.getParam("fileName"));
-						rm.addParam("filePath", msg.getParam("filePath"));
+						rm.setFile(msg.getFile());
+						msg.getFile().setFileOffset(file.length());
 
-						offset = file.length();
-						rm.addParam("fileOffset", offset + "");
 						// 回应
 						response(rm, ctx.channel());
 					} else {
@@ -139,11 +129,9 @@ public class TransportServerHandler implements MessageHandler {
 						raf.close();
 
 						Message rm = new Message();
-						rm.setType(Message.Type.RESPONSE);
 						rm.setAction("fileUploadAck");
 						rm.addParam("ack", Message.Ack.FILE_LOCKED);
-						rm.addParam("fileName", msg.getParam("fileName"));
-						rm.addParam("filePath", msg.getParam("filePath"));
+						rm.setFile(msg.getFile());
 
 						// 回应
 						response(rm, ctx.channel());
@@ -157,25 +145,20 @@ public class TransportServerHandler implements MessageHandler {
 			} else {
 
 				Message rm = new Message();
-				rm.setType(Message.Type.RESPONSE);
 				rm.setAction("fileUploadAck");
 				rm.addParam("ack", Message.Ack.FILE_READY);
-				rm.addParam("fileName", msg.getParam("fileName"));
-				rm.addParam("filePath", msg.getParam("filePath"));
-				rm.addParam("fileOffset", 0 + "");
-
+				rm.setFile(msg.getFile());
+				rm.getFile().setFileOffset(0);
+				
 				// 回应
 				response(rm, ctx.channel());
 			}
 		} else {
 			Message rm = new Message();
-			rm.setType(Message.Type.RESPONSE);
 			rm.setAction("fileUploadAck");
 			rm.addParam("ack", Message.Ack.FILE_READY);
-			rm.addParam("fileName", msg.getParam("fileName"));
-			rm.addParam("filePath", msg.getParam("filePath"));
-			rm.addParam("fileOffset", 0 + "");
-
+			rm.setFile(msg.getFile());
+			rm.getFile().setFileOffset(0);
 			// 回应
 			response(rm, ctx.channel());
 		}
@@ -197,18 +180,17 @@ public class TransportServerHandler implements MessageHandler {
 			ctx.close();
 		} else if (result.equals(Message.Result.FILE_MD5_WRONG)) {
 			// 重新传输
-			String fileName = msg.getParam("fileName");
+			String fileName = msg.getFile().getFileName();
 			if (fileName != null) {
 
 				String filePath = "G:\\20190125-6.zip";
 
 				Message responseMsg = new Message();
-				responseMsg.setType(Message.Type.RESPONSE);
 				responseMsg.setAction("fileDownloadAck");
-				responseMsg.setHasFile(true);
-				responseMsg.addParam("fileName", fileName);
-				responseMsg.addParam("filePath", filePath);
-				responseMsg.addParam("fileOffset", "0");
+				responseMsg.setHasFileData(true);
+				responseMsg.setFile(msg.getFile());
+				responseMsg.getFile().setFileOffset(0);
+				responseMsg.getFile().setFilePath(filePath);
 
 				LOGGER.debug("responseMsg:" + responseMsg);
 				response(responseMsg, ctx.channel());
@@ -225,22 +207,15 @@ public class TransportServerHandler implements MessageHandler {
 	 */
 	private void handleFileDownloadRequest(ChannelHandlerContext ctx, Message msg) {
 
-		String fileName = msg.getParam("fileName");
+		String fileName = msg.getFile().getFileName();
 		if (fileName != null) {
 
 			String filePath = "G:\\20190125-6.zip";
 
-//			Message responseMsg = nefile:/D:/SmileTeeth/Project/Reference/FileTransformDemo/app/src/main/java/com/uestc/filetransformdemo/MainActivity.javaw Message();
-//			responseMsg.setType(Message.Type.RESPONSE);
-//			responseMsg.setAction("fileDownloadAck");
-//			responseMsg.setHasFile(true);
-//			responseMsg.addParam("fileName", fileName);
-//			responseMsg.addParam("filePath", filePath);
-//			responseMsg.addParam("fileOffset", msg.getParam("fileOffset"));
 			msg.setAction("fileDownloadAck");
 			msg.addParam("ack", Message.Ack.FILE_READY);
-			msg.addParam("filePath", filePath);
-			msg.setHasFile(true);
+			msg.setHasFileData(true);
+			msg.getFile().setFilePath(filePath);
 
 			response(msg, ctx.channel());
 
@@ -265,18 +240,10 @@ public class TransportServerHandler implements MessageHandler {
 					System.out.println("TransportServerHandler writeAndFlush success msg" + msg);
 				} else {
 					System.out.println("TransportServerHandler writeAndFlush failure");
+					System.out.println(channelFuture.cause().getMessage());
 				}
 			}
 		});
 	}
 
-	@Override
-	public void channelInactive(ChannelHandlerContext ctx) throws Exception {
-
-	}
-
-	@Override
-	public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) throws Exception {
-
-	}
 }

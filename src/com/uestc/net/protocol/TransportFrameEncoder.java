@@ -25,26 +25,30 @@ public class TransportFrameEncoder extends MessageToByteEncoder<Message> {
 	// 分段下载，每段100M
 	private static final int SEGMENT_LENGTH = 1024 * 1024 * 100;
 
+	private RandomAccessFile raf;
+
 	@Override
 	protected void encode(ChannelHandlerContext channelHandlerContext, Message message, ByteBuf out) throws Exception {
 
-		boolean hasFile = message.isHasFile();
+		System.out.println("TransportFrameEncoder encode " + message);
+
+		boolean hasFile = message.isHasFileData();
 		if (hasFile) {
-			String filePath = message.getParams().get("filePath");
+			String filePath = message.getFile().getFilePath();
 			File file = new File(filePath);
 			if (file.exists()) {
 				// 添加文件属性
 				long fileLength = file.length();
-				message.addParam("fileLength", fileLength + "");
+				message.getFile().setFileLength(fileLength);
 
 				FileInputStream fis = new FileInputStream(new File(filePath));
 				String md5 = DigestUtils.md5Hex(fis);
-				message.addParam("fileMD5", md5);
+				message.getFile().setMd5(md5);
 
-				long offset = Long.parseLong(message.getParam("fileOffset"));
+				long offset = message.getFile().getFileOffset();
 				System.out.println("TransportFrameEncoder encode: offset:" + offset);
 
-				RandomAccessFile raf = new RandomAccessFile(new File(filePath), "rw");
+				raf = new RandomAccessFile(new File(filePath), "rw");
 				// 跳过已读的字节数
 				raf.seek(offset);
 				// 读取指定长度的数据
@@ -54,8 +58,9 @@ public class TransportFrameEncoder extends MessageToByteEncoder<Message> {
 
 					long segmentLength = fileLength - offset;
 					if (segmentLength > 0) {
-						message.addParam("segmentLength", segmentLength + "");
+						message.getFile().setSegmentLength(segmentLength);
 						message.setAction("fileDownloadAck");
+						message.addParam("ack",Message.Ack.FILE_READY);
 
 						// 转化为json格式的支付串
 						String jsonMessage = JSON.toJSONString(message);
@@ -76,13 +81,17 @@ public class TransportFrameEncoder extends MessageToByteEncoder<Message> {
 						System.out.println("TransportFrameEncoder encode: write end!!!");
 						raf.close();
 					} else {
-						// transportListener.onExceptionCaught("file encode wrong");
-						channelHandlerContext.close();
+
+						message.setAction("fileDownloadAck");
+						message.addParam("ack", Message.Ack.FILE_ENCODE_WRONG);
+						message.setHasFileData(false);	
+
+						channelHandlerContext.channel().writeAndFlush(message);
 					}
 
 				} else {
 					message.setAction("fileDownloadSegmentAck");
-					message.addParam("segmentLength", SEGMENT_LENGTH + "");
+					message.getFile().setSegmentLength(SEGMENT_LENGTH);
 					// 转化为json格式的支付串
 					String jsonMessage = JSON.toJSONString(message);
 					byte[] byteMsg = jsonMessage.getBytes();
@@ -101,16 +110,17 @@ public class TransportFrameEncoder extends MessageToByteEncoder<Message> {
 							out.writeBytes(bytes);
 						}
 					}
+
+					System.out.println("TransportFrameEncoder encode: write end!!!");
 				}
 
-				System.out.println("TransportFrameEncoder encode: write end!!!");
 				raf.close();
 			} else {
 				// 下载文件没找到
 				if (message.getAction().equals("fileDownloadAck")) {
-					message.addParam("ack",Message.Ack.FILE_NOT_EXIST);
-					message.setHasFile(false);
-					
+					message.addParam("ack", Message.Ack.FILE_NOT_EXIST);
+					message.setHasFileData(false);
+
 					// 转化为json格式的支付串
 					String jsonMessage = JSON.toJSONString(message);
 
@@ -142,6 +152,15 @@ public class TransportFrameEncoder extends MessageToByteEncoder<Message> {
 			// 写入参数
 			out.writeInt(msgLength);
 			out.writeBytes(byteMsg);
+		}
+	}
+
+	@Override
+	public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) throws Exception {
+		super.exceptionCaught(ctx, cause);
+
+		if (raf != null) {
+			raf.close();
 		}
 	}
 }
