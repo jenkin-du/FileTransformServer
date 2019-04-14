@@ -118,10 +118,10 @@ public class TransportFrameDecoder extends ChannelInboundHandlerAdapter {
 				if (msg.isHasFileData()) {
 
 					fileSize = msg.getFile().getFileLength();
-                    fileOffset = msg.getFile().getFileOffset();
-                    fileLeftSize = fileSize - fileOffset;
-                    segmentLeftSize = msg.getFile().getSegmentLength();
-                    hasFile = true;
+					fileOffset = msg.getFile().getFileOffset();
+					fileLeftSize = fileSize - fileOffset;
+					segmentLeftSize = msg.getFile().getSegmentLength();
+					hasFile = true;
 
 					// 没有文件传输
 				} else {
@@ -153,7 +153,7 @@ public class TransportFrameDecoder extends ChannelInboundHandlerAdapter {
 
 			// 第二帧数据中能读出参数
 			if (remainingByte != null && remainingByte.length + buf.readableBytes() >= msgSize) {
-
+ 
 				int toRead = msgSize - remainingByte.length;
 				if (toRead > 0) {
 					byte[] toReadByte = new byte[toRead];
@@ -180,10 +180,10 @@ public class TransportFrameDecoder extends ChannelInboundHandlerAdapter {
 					if (msg.isHasFileData()) {
 
 						fileSize = msg.getFile().getFileLength();
-	                    fileOffset = msg.getFile().getFileOffset();
-	                    fileLeftSize = fileSize - fileOffset;
-	                    segmentLeftSize = msg.getFile().getSegmentLength();
-	                    hasFile = true;
+						fileOffset = msg.getFile().getFileOffset();
+						fileLeftSize = fileSize - fileOffset;
+						segmentLeftSize = msg.getFile().getSegmentLength();
+						hasFile = true;
 
 						// 没有文件传输
 					} else {
@@ -211,7 +211,7 @@ public class TransportFrameDecoder extends ChannelInboundHandlerAdapter {
 						randomAccessFile = new RandomAccessFile(tempFile, "rw");
 						// 对文件进行加锁
 						lock = randomAccessFile.getChannel().tryLock();
-						if (lock == null) {
+						if (lock == null || !lock.isValid() || !lock.isValid()) {
 							fileListener.onExceptionCaught("file is locked");
 							randomAccessFile.close();
 							ctx.close();
@@ -224,7 +224,7 @@ public class TransportFrameDecoder extends ChannelInboundHandlerAdapter {
 						createTempPath();
 						// 对文件进行加锁
 						lock = randomAccessFile.getChannel().tryLock();
-						if (lock == null) {
+						if (lock == null || !lock.isValid()) {
 							fileListener.onExceptionCaught("file is locked");
 							randomAccessFile.close();
 							ctx.close();
@@ -237,7 +237,7 @@ public class TransportFrameDecoder extends ChannelInboundHandlerAdapter {
 					createTempPath();
 					// 对文件进行加锁
 					lock = randomAccessFile.getChannel().tryLock();
-					if (lock == null) {
+					if (lock == null || !lock.isValid()) {
 						fileListener.onExceptionCaught("file is locked");
 						randomAccessFile.close();
 						ctx.close();
@@ -265,6 +265,10 @@ public class TransportFrameDecoder extends ChannelInboundHandlerAdapter {
 					// 关闭文件
 					lock.release();
 					randomAccessFile.close();
+					lock = null;
+					randomAccessFile = null;
+
+					System.out.println("segmentLeftSize <= remainingByte.length randomAccessFile.close()");
 
 					// 跟新数据传输进度
 					segmentRead += segmentLeftSize;
@@ -323,6 +327,12 @@ public class TransportFrameDecoder extends ChannelInboundHandlerAdapter {
 					}
 					lock.release();
 					randomAccessFile.close();
+					lock = null;
+					randomAccessFile = null;
+
+					System.out.println("segmentLeftSize <= buf.readableBytes() randomAccessFile.close()");
+					boolean f = tempFile.renameTo(new File("G:\\rename.7z"));
+					System.out.println("rename : " + f);
 
 					// 更新数据传输进度
 					segmentRead += segmentLeftSize;

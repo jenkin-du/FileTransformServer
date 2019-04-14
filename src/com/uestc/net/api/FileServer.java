@@ -1,5 +1,11 @@
 package com.uestc.net.api;
 
+import java.io.File;
+import java.io.FileNotFoundException;
+import java.io.IOException;
+import java.io.RandomAccessFile;
+import java.nio.channels.FileLock;
+
 import com.uestc.net.callback.FileTransportListener;
 import com.uestc.net.protocol.TransportFrameDecoder;
 import com.uestc.net.protocol.TransportFrameEncoder;
@@ -59,7 +65,7 @@ public class FileServer {
 
 		@Override
 		public void onProgress(String fileId, double progress, long totalSize) {
-			System.out.println("onProgress:" + progress);
+			// System.out.println("onProgress:" + progress);
 		}
 
 		@Override
@@ -67,6 +73,24 @@ public class FileServer {
 
 			if (isSuccess) {
 				System.out.println("上传成功！！！");
+
+//				File temp = new File(tempFilePath);
+//				boolean success = temp.delete();
+//				System.out.println("success:" + success);
+				// RandomAccessFile raf;
+				// try {
+				// raf = new RandomAccessFile(temp, "rw");
+				// FileLock lock = raf.getChannel().tryLock();
+				// if (lock != null && lock.isValid()) {
+				// boolean success = temp.renameTo(new File("G:reanme.7z"));
+				// System.out.println("success:" + success);
+				// }
+				//
+				// } catch (IOException e) {
+				// // TODO Auto-generated catch block
+				// e.printStackTrace();
+				// }
+
 			}
 		}
 
