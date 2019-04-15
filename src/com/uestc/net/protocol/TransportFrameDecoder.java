@@ -1,24 +1,26 @@
 package com.uestc.net.protocol;
 
 import java.io.File;
-import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.RandomAccessFile;
 import java.nio.channels.FileLock;
+import java.security.NoSuchAlgorithmException;
 import java.util.UUID;
 
-import org.apache.commons.codec.digest.DigestUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import com.alibaba.fastjson.JSON;
 import com.uestc.net.api.TransportServerHandler;
 import com.uestc.net.callback.FileTransportListener;
+import com.uestc.net.util.MD5Util;
 import com.uestc.net.util.SharedPreferenceUtil;
 
 import io.netty.buffer.ByteBuf;
-import io.netty.channel.ChannelFuture;
-import io.netty.channel.ChannelFutureListener;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
+import io.netty.handler.timeout.IdleState;
+import io.netty.handler.timeout.IdleStateEvent;
 
 /**
  * <pre>
@@ -30,6 +32,8 @@ import io.netty.channel.ChannelInboundHandlerAdapter;
  * </pre>
  */
 public class TransportFrameDecoder extends ChannelInboundHandlerAdapter {
+
+	private static final Logger LOGGER = LoggerFactory.getLogger(TransportFrameDecoder.class);
 
 	// 消息头是否读
 	private boolean msgHeaderRead = false;
@@ -58,6 +62,8 @@ public class TransportFrameDecoder extends ChannelInboundHandlerAdapter {
 	// 文件传输时写入的临时文件
 	private File tempFile;
 	private RandomAccessFile randomAccessFile;
+	// 文件锁
+	private FileLock lock;
 
 	// 业务逻辑处理器
 	private TransportServerHandler serverHandler;
@@ -67,30 +73,25 @@ public class TransportFrameDecoder extends ChannelInboundHandlerAdapter {
 	// 文件传输监听器
 	private FileTransportListener fileListener;
 
-	// 文件锁
-	private FileLock lock;
-
-	public TransportFrameDecoder(TransportServerHandler serverHandler, FileTransportListener listener) {
+	public TransportFrameDecoder(TransportServerHandler serverHandler) {
 		this.serverHandler = serverHandler;
-		this.fileListener = listener;
+		this.fileListener = serverHandler.getFileLisenter();
 	}
 
 	@Override
 	public void channelRead(ChannelHandlerContext ctx, Object byteBuf) throws Exception {
 		ByteBuf buf = (ByteBuf) byteBuf;
 
-		// System.out.println(" ----------");
-
 		// 读参数头
 		if (!msgHeaderRead) {
 			msgSize = buf.readInt();
 			msgHeaderRead = true;
 
-			System.out.println("TransportFrameDecoder, paramSize:" + msgSize);
+			LOGGER.debug("TransportFrameDecoder, paramSize:" + msgSize);
 		}
 
 		// 读参数
-		if (!msgRead && msgSize != 0) {
+		if (!msgRead && msgSize > 0) {
 
 			// 第一帧数据中能读出参数
 			byte[] msgByte;
@@ -111,7 +112,7 @@ public class TransportFrameDecoder extends ChannelInboundHandlerAdapter {
 				// 解析数据
 				String jsonMsg = new String(msgByte);
 
-				System.out.println("TransportFrameDecoder,jsonMsg: " + jsonMsg);
+				LOGGER.debug("TransportFrameDecoder,jsonMsg: " + jsonMsg);
 
 				msg = JSON.parseObject(jsonMsg, Message.class);
 				// 有文件传输
@@ -126,8 +127,8 @@ public class TransportFrameDecoder extends ChannelInboundHandlerAdapter {
 					// 没有文件传输
 				} else {
 					// 文档分段传输，事件由Decoder处理，不向外分发
-					if (msg.getAction().equals("fileDownloadSegmentResult")) {
-						handleFileDownLoadSegmentResult(ctx, msg);
+					if (msg.getAction().equals(Message.Action.FILE_DOWNLOAD_SEGMENT_REQUEST)) {
+						handleFileDownLoadSegmentRequest(ctx, msg);
 					} else {
 						serverHandler.handleMessage(ctx, msg);
 					}
@@ -153,7 +154,7 @@ public class TransportFrameDecoder extends ChannelInboundHandlerAdapter {
 
 			// 第二帧数据中能读出参数
 			if (remainingByte != null && remainingByte.length + buf.readableBytes() >= msgSize) {
- 
+
 				int toRead = msgSize - remainingByte.length;
 				if (toRead > 0) {
 					byte[] toReadByte = new byte[toRead];
@@ -173,9 +174,7 @@ public class TransportFrameDecoder extends ChannelInboundHandlerAdapter {
 					// 解析数据
 					String jsonMessage = new String(msgByte);
 
-					System.out.println("TransportFrameDecoder:" + jsonMessage);
-
-					msg = JSON.parseObject(jsonMessage, Message.class);
+					LOGGER.debug("TransportFrameDecoder:" + jsonMessage);
 					// 有文件传输
 					if (msg.isHasFileData()) {
 
@@ -188,8 +187,8 @@ public class TransportFrameDecoder extends ChannelInboundHandlerAdapter {
 						// 没有文件传输
 					} else {
 						// 文档分段传输，事件由Decoder处理，不向外分发
-						if (msg.getAction().equals("fileDownloadSegmentResult")) {
-							handleFileDownLoadSegmentResult(ctx, msg);
+						if (msg.getAction().equals(Message.Action.FILE_DOWNLOAD_SEGMENT_REQUEST)) {
+							handleFileDownLoadSegmentRequest(ctx, msg);
 						} else {
 							serverHandler.handleMessage(ctx, msg);
 						}
@@ -200,51 +199,62 @@ public class TransportFrameDecoder extends ChannelInboundHandlerAdapter {
 			}
 		}
 
-		if (hasFile && segmentLeftSize != 0) {
+		if (hasFile && segmentLeftSize > 0) {
 
-			if (randomAccessFile == null) {
+			try {
+				if (randomAccessFile == null) {
+					String key = MD5Util.getTempFileKey(msg);
+					String tempFilePath = SharedPreferenceUtil.get(key);
+					if (tempFilePath != null) {
+						tempFile = new File(tempFilePath);
+						if (tempFile.exists()) {
+							randomAccessFile = new RandomAccessFile(tempFile, "rw");
+							// 对文件进行加锁
+							lock = randomAccessFile.getChannel().tryLock();
+							if (lock == null) {
+								fileListener.onExceptionCaught("file is locked");
+								randomAccessFile.close();
+								ctx.close();
+								return;
+							}
+						} else {
+							SharedPreferenceUtil.remove(key);
 
-				String tempFilePath = SharedPreferenceUtil.get(msg.getFile().getFileName());
-				if (tempFilePath != null) {
-					tempFile = new File(tempFilePath);
-					if (tempFile.exists()) {
-						randomAccessFile = new RandomAccessFile(tempFile, "rw");
-						// 对文件进行加锁
-						lock = randomAccessFile.getChannel().tryLock();
-						if (lock == null || !lock.isValid() || !lock.isValid()) {
-							fileListener.onExceptionCaught("file is locked");
-							randomAccessFile.close();
-							ctx.close();
-							return;
+							// 生成临时文件路径
+							createTempPath(msg);
+							// 对文件进行加锁
+							lock = randomAccessFile.getChannel().tryLock();
+							if (lock == null) {
+								fileListener.onExceptionCaught("file is locked");
+								randomAccessFile.close();
+								ctx.close();
+								return;
+							}
 						}
+
 					} else {
-						SharedPreferenceUtil.remove(msg.getFile().getFileName());
-
 						// 生成临时文件路径
-						createTempPath();
+						createTempPath(msg);
 						// 对文件进行加锁
 						lock = randomAccessFile.getChannel().tryLock();
-						if (lock == null || !lock.isValid()) {
+						if (lock == null) {
 							fileListener.onExceptionCaught("file is locked");
 							randomAccessFile.close();
 							ctx.close();
 							return;
 						}
-					}
 
-				} else {
-					// 生成临时文件路径
-					createTempPath();
-					// 对文件进行加锁
-					lock = randomAccessFile.getChannel().tryLock();
-					if (lock == null || !lock.isValid()) {
-						fileListener.onExceptionCaught("file is locked");
-						randomAccessFile.close();
-						ctx.close();
-						return;
 					}
 				}
+			} catch (Exception e) {
+				System.err.println(e.getLocalizedMessage());
 
+				msg.setAction(Message.Action.FILE_DOWNLOAD_RESPONSE);
+				msg.setResponse(Message.Response.FILE_LOCKED);
+				msg.setHasFileData(false);
+
+				ctx.channel().writeAndFlush(msg);
+				ctx.channel().close();
 			}
 
 			// 读取剩余的数据
@@ -265,23 +275,22 @@ public class TransportFrameDecoder extends ChannelInboundHandlerAdapter {
 					// 关闭文件
 					lock.release();
 					randomAccessFile.close();
-					lock = null;
-					randomAccessFile = null;
-
-					System.out.println("segmentLeftSize <= remainingByte.length randomAccessFile.close()");
 
 					// 跟新数据传输进度
 					segmentRead += segmentLeftSize;
-					fileListener.onProgress("", (fileOffset + segmentRead) * 1.0 / fileSize, fileSize);
+					fileListener.onProgress((fileOffset + segmentRead) * 1.0 / fileSize, fileSize);
 
 					// 实时检测整个文件大小是否读取完毕
 					fileLeftSize -= segmentLeftSize;
 					if (fileLeftSize == 0) {
-						// 检查文件是否完整
+						// 完成传输
 						checkFileMD5(ctx, msg, tempFile);
 					} else {
-						// 完成数据传输，处理业务逻辑
-						serverHandler.handleMessage(ctx, msg);
+						// 分段传输文件
+						if (msg.getAction().equals(Message.Action.FILE_UPLOAD_SEGMENT_RESPONSE)) {
+							// 完成数据传输，处理业务逻辑
+							handleFileUploadSegmentResponse(ctx, msg);
+						}
 					}
 					// 重置控制变量
 					reset();
@@ -305,7 +314,7 @@ public class TransportFrameDecoder extends ChannelInboundHandlerAdapter {
 					remainingByte = null;
 
 					// 数据传输进度
-					fileListener.onProgress("", (fileOffset + segmentRead) * 1.0 / fileSize, fileSize);
+					fileListener.onProgress((fileOffset + segmentRead) * 1.0 / fileSize, fileSize);
 				}
 
 			}
@@ -327,25 +336,22 @@ public class TransportFrameDecoder extends ChannelInboundHandlerAdapter {
 					}
 					lock.release();
 					randomAccessFile.close();
-					lock = null;
-					randomAccessFile = null;
-
-					System.out.println("segmentLeftSize <= buf.readableBytes() randomAccessFile.close()");
-					boolean f = tempFile.renameTo(new File("G:\\rename.7z"));
-					System.out.println("rename : " + f);
 
 					// 更新数据传输进度
 					segmentRead += segmentLeftSize;
-					fileListener.onProgress("", (fileOffset + segmentRead) * 1.0 / fileSize, fileSize);
+					fileListener.onProgress((fileOffset + segmentRead) * 1.0 / fileSize, fileSize);
 
 					// 实时检测整个文件大小是否读取完毕
 					fileLeftSize -= segmentLeftSize;
 					if (fileLeftSize == 0) {
-						// 检查文件是否完整
+						// 完成传输
 						checkFileMD5(ctx, msg, tempFile);
 					} else {
-						// 完成数据传输，处理业务逻辑
-						serverHandler.handleMessage(ctx, msg);
+						// 分段传输文件
+						if (msg.getAction().equals(Message.Action.FILE_UPLOAD_SEGMENT_RESPONSE)) {
+							// 完成数据传输，处理业务逻辑
+							handleFileUploadSegmentResponse(ctx, msg);
+						}
 					}
 					// 重置控制变量
 					reset();
@@ -367,8 +373,9 @@ public class TransportFrameDecoder extends ChannelInboundHandlerAdapter {
 					} else {
 						randomAccessFile.write(data);
 					}
+
 					// 数据传输进度
-					fileListener.onProgress("", (fileOffset + segmentRead) * 1.0 / fileSize, fileSize);
+					fileListener.onProgress((fileOffset + segmentRead) * 1.0 / fileSize, fileSize);
 				}
 			}
 		}
@@ -377,86 +384,109 @@ public class TransportFrameDecoder extends ChannelInboundHandlerAdapter {
 	}
 
 	/**
+	 * 处理分段上传响应
+	 * 
+	 * @param ctx
+	 * @param msg
+	 */
+	private void handleFileUploadSegmentResponse(ChannelHandlerContext ctx, Message msg) {
+
+		long fileOffset = msg.getFile().getFileOffset();
+		long segmentLength = msg.getFile().getSegmentLength();
+
+		msg.setAction(Message.Action.FILE_UPLOAD_SEGMENT_REQUEST);
+		msg.getFile().setFileOffset(fileOffset + segmentLength);
+		msg.setHasFileData(false);
+
+		ctx.channel().writeAndFlush(msg);
+	}
+
+	/**
 	 * 处理文件分段下载结果
 	 * 
 	 * @param ctx
 	 * @param message
 	 */
-	private void handleFileDownLoadSegmentResult(ChannelHandlerContext ctx, Message message) {
+	private void handleFileDownLoadSegmentRequest(ChannelHandlerContext ctx, Message message) {
 
-		message.setAction("fileDownloadSegmentAck");
+		message.setAction(Message.Action.FILE_DOWNLOAD_SEGMENT_RESPONSE);
 		message.setHasFileData(true);
 
-		ctx.channel().writeAndFlush(message).addListener(new ChannelFutureListener() {
-			@Override
-			public void operationComplete(ChannelFuture channelFuture) {
-				if (channelFuture.isSuccess()) {
-					System.out.println("writeAndFlush success msg" + message);
-				} else {
-					System.out.println("writeAndFlush failure");
-				}
-			}
-		});
+		ctx.channel().writeAndFlush(message);
 	}
 
 	/**
 	 * 生成临时文件路径
-	 * 
+	 *
 	 * @throws IOException
 	 */
-	private void createTempPath() throws IOException {
+	private void createTempPath(Message msg) throws IOException {
 
 		UUID uuid = UUID.randomUUID();
 		File tempFolder = new File("G:\\temp");
+		boolean isOk = false;
 		if (!tempFolder.exists()) {
-			tempFolder.mkdir();
+			isOk = tempFolder.mkdir();
 		}
-		tempFile = new File(tempFolder.getAbsolutePath() + "\\" + uuid + ".tp");
+		tempFile = new File(tempFolder.getAbsolutePath() + "\\" + uuid + ".tmp");
 		tempFile.createNewFile();
 		randomAccessFile = new RandomAccessFile(tempFile, "rw");
+
+		String key = MD5Util.getTempFileKey(msg);
 		// 保存临时文件路径
-		SharedPreferenceUtil.save(msg.getFile().getFileName(), tempFile.getAbsolutePath());
+		SharedPreferenceUtil.save(key, tempFile.getAbsolutePath());
+
+		System.out.println("tempFile:" + tempFile.getAbsolutePath());
 
 	}
 
-	// 检查文件MD5
-	private void checkFileMD5(ChannelHandlerContext ctx, Message msg, File tempFile) {
+	/**
+	 * 检查文件MD5
+	 * 
+	 * @param ctx
+	 * @param msg
+	 * @param tempFile
+	 * @throws NoSuchAlgorithmException
+	 */
+	private void checkFileMD5(ChannelHandlerContext ctx, Message msg, File tempFile) throws NoSuchAlgorithmException {
+
+		LOGGER.debug("checkFileMD5:tempFile" + tempFile.getAbsolutePath());
 
 		try {
-			FileInputStream fis;
-			fis = new FileInputStream(tempFile);
+			String md5 = MD5Util.getFileMD5(tempFile);
+			LOGGER.debug("md5: " + md5);
 
-			String md5 = DigestUtils.md5Hex(fis);
 			String fileMD5 = msg.getFile().getMd5();
+			LOGGER.debug("fileMD5:" + fileMD5);
 
 			if (md5.equals(fileMD5)) {
+				LOGGER.debug("checkFileMD5:correct");
 				// 数据传输进度
-				fileListener.onProgress("", 1, fileSize);
+				fileListener.onProgress(1, fileSize);
 				// 完成数据读写
-				fileListener.onComplete("", true, tempFile.getAbsolutePath());
+				fileListener.onComplete(true, tempFile.getAbsolutePath());
 				// 完成数据传输，处理业务逻辑
 				serverHandler.handleMessage(ctx, msg);
-				// 删除临时文件记录
-				SharedPreferenceUtil.remove(msg.getParam("fileName"));
 			} else {
-
+				LOGGER.debug("checkFileMD5:wrong");
 				// 数据传输进度
-				fileListener.onProgress("", 0, fileLeftSize);
+				fileListener.onProgress(0, fileLeftSize);
 				// 完成数据读写
-				fileListener.onComplete("", false, tempFile.getAbsolutePath());
+				fileListener.onComplete(false, tempFile.getAbsolutePath());
 				// 重传
-				Message message = new Message();
-				message.setAction("fileUploadResult");
-				message.addParam("result", Message.Result.FILE_MD5_WRONG);
-				message.setFile(msg.getFile());
+				msg.setAction(Message.Action.FILE_UPLOAD_RESULT);
+				msg.setResponse(Message.Response.FILE_MD5_WRONG);
+				msg.setHasFileData(false);
 
 				// 删除临时文件
 				tempFile.delete();
 				// 删除临时文件记录
-				SharedPreferenceUtil.remove(msg.getFile().getFileName());
+				String key = MD5Util.getTempFileKey(msg);
+				SharedPreferenceUtil.remove(key);
 				// 下载错误，响应服务器
-				ctx.channel().writeAndFlush(message);
+				ctx.channel().writeAndFlush(msg);
 			}
+
 		} catch (IOException e) {
 			e.printStackTrace();
 		}
@@ -465,46 +495,55 @@ public class TransportFrameDecoder extends ChannelInboundHandlerAdapter {
 	@Override
 	public void userEventTriggered(ChannelHandlerContext ctx, Object evt) throws Exception {
 		super.userEventTriggered(ctx, evt);
+		serverHandler.userEventTriggered(ctx, evt);
 
-		// if (evt instanceof IdleStateEvent) {
-		//
-		// IdleStateEvent event = (IdleStateEvent) evt;
-		// if (event.state() == IdleState.ALL_IDLE) {
-		// System.out.println("userEventTriggered: IdleState.ALL_IDLE");
-		// ctx.close();
-		// // 超时
-		// }
-		//
-		// if (event.state() == IdleState.READER_IDLE) {
-		// // ctx.close();
-		// System.out.println("userEventTriggered: IdleState.READER_IDLE");
-		// // 超时
-		// }
-		//
-		// if (event.state() == IdleState.WRITER_IDLE) {
-		// // ctx.close();
-		// System.out.println("userEventTriggered: IdleState.WRITER_IDLE");
-		// // 超时
-		// }
-		// }
+		if (evt instanceof IdleStateEvent) {
+
+			IdleStateEvent event = (IdleStateEvent) evt;
+			if (event.state() == IdleState.ALL_IDLE) {
+				ctx.close();
+				LOGGER.debug("userEventTriggered: IdleState.ALL_IDLE");
+			}
+		}
 	}
 
 	@Override
 	public void channelReadComplete(ChannelHandlerContext ctx) throws Exception {
 		super.channelReadComplete(ctx);
 
-		// System.out.println("channelReadComplete: channelReadComplete");
 	}
 
 	@Override
 	public void channelInactive(ChannelHandlerContext ctx) throws Exception {
 		super.channelInactive(ctx);
 
-		if (randomAccessFile != null) {
+		if (lock != null && lock.isValid()) {
 			lock.release();
+		}
+
+		if (randomAccessFile != null) {
 			randomAccessFile.close();
 		}
-		System.out.println("channelInactive: channel has inactive");
+
+		serverHandler.onChannelInactive(ctx);
+		LOGGER.debug("channelInactive: channel has inactive");
+	}
+
+	@Override
+	public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) throws Exception {
+		super.exceptionCaught(ctx, cause);
+
+		if (lock != null && lock.isValid()) {
+			lock.release();
+		}
+
+		if (randomAccessFile != null) {
+			randomAccessFile.close();
+		}
+
+		ctx.close();
+
+		LOGGER.debug(cause.getLocalizedMessage());
 	}
 
 	/**
@@ -528,8 +567,10 @@ public class TransportFrameDecoder extends ChannelInboundHandlerAdapter {
 
 	/**
 	 * 重置控制变量
+	 * 
+	 * @throws IOException
 	 */
-	private void reset() {
+	private void reset() throws IOException {
 
 		msgHeaderRead = false;
 		msgRead = false;
@@ -542,6 +583,10 @@ public class TransportFrameDecoder extends ChannelInboundHandlerAdapter {
 
 		remainingByte = null;
 		// 文件传输时写入的临时文件
+		if (lock != null && lock.isValid()) {
+			lock.release();
+			lock = null;
+		}
 		tempFile = null;
 		randomAccessFile = null;
 

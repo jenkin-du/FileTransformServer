@@ -1,12 +1,8 @@
 package com.uestc.net.api;
 
-import java.io.File;
-import java.io.FileNotFoundException;
-import java.io.IOException;
-import java.io.RandomAccessFile;
-import java.nio.channels.FileLock;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
-import com.uestc.net.callback.FileTransportListener;
 import com.uestc.net.protocol.TransportFrameDecoder;
 import com.uestc.net.protocol.TransportFrameEncoder;
 import io.netty.bootstrap.ServerBootstrap;
@@ -28,6 +24,11 @@ import io.netty.handler.timeout.IdleStateHandler;
  *
  */
 public class FileServer {
+
+	/*
+	 * 日志组件，orj.slf4j(Simple Logging Facade for Java)
+	 */
+	private static final Logger LOGGER = LoggerFactory.getLogger(FileServer.class);
 
 	/**
 	 * 加载配置文件
@@ -58,48 +59,12 @@ public class FileServer {
 	 * 启动文件服务器
 	 */
 	// 设置服务器的端口,默认20001
-	private int listenPort = 20001;
+	private int listenPort = 20002;
 
-	// 文件监听器
-	private FileTransportListener fileListener = new FileTransportListener() {
+	// 含参构造函数，可以设置服务器的端口
+	public FileServer() {
 
-		@Override
-		public void onProgress(String fileId, double progress, long totalSize) {
-			// System.out.println("onProgress:" + progress);
-		}
-
-		@Override
-		public void onComplete(String fileId, boolean isSuccess, String tempFilePath) {
-
-			if (isSuccess) {
-				System.out.println("上传成功！！！");
-
-//				File temp = new File(tempFilePath);
-//				boolean success = temp.delete();
-//				System.out.println("success:" + success);
-				// RandomAccessFile raf;
-				// try {
-				// raf = new RandomAccessFile(temp, "rw");
-				// FileLock lock = raf.getChannel().tryLock();
-				// if (lock != null && lock.isValid()) {
-				// boolean success = temp.renameTo(new File("G:reanme.7z"));
-				// System.out.println("success:" + success);
-				// }
-				//
-				// } catch (IOException e) {
-				// // TODO Auto-generated catch block
-				// e.printStackTrace();
-				// }
-
-			}
-		}
-
-		@Override
-		public void onExceptionCaught(String exception) {
-
-		}
-
-	};
+	}
 
 	// 启动服务器的函数
 	public void start() throws Exception {
@@ -127,8 +92,7 @@ public class FileServer {
 							// 超时处理器
 							ch.pipeline().addLast(new IdleStateHandler(0, 0, 60));
 							// 自己实现的帧解码器,继承了ChannelInboundHandlerAdapter,入站处理器
-							ch.pipeline().addLast("decoder",
-									new TransportFrameDecoder(transportServerHandler, fileListener));
+							ch.pipeline().addLast("decoder", new TransportFrameDecoder(transportServerHandler));
 							// 自己实现的msg编码器,继承了MessageToByteEncoder,出站处理器
 							ch.pipeline().addLast("encoder", new TransportFrameEncoder());
 
@@ -138,13 +102,12 @@ public class FileServer {
 
 			// 绑定端口并设定监听对象,通过调用sync同步方法阻塞直到绑定成功
 			ChannelFuture f = bootstrap.bind(listenPort).sync();
-			System.out.println("开启服务器！！！！！！！！！！！！");
+			LOGGER.info("Server started,listen port:" + listenPort);
 			// 应用程序会一直等待，直到channel关闭
 			f.channel().closeFuture().sync();
-			System.out.println("关闭服务器！！！！！！！！！！！！");
 
 		} catch (InterruptedException e) {
-
+			LOGGER.error("Netty not start：", e);
 		} finally {
 			// 关闭EventLoopGroup，释放掉所有资源包括创建的线程
 			bossGroup.shutdownGracefully();

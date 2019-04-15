@@ -1,14 +1,16 @@
 package com.uestc.net.api;
 
 import java.io.File;
+import java.io.FileWriter;
 import java.io.IOException;
 import java.io.RandomAccessFile;
 import java.nio.channels.FileLock;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import com.uestc.net.callback.FileTransportListener;
 import com.uestc.net.protocol.Message;
+import com.uestc.net.util.MD5Util;
 import com.uestc.net.util.SharedPreferenceUtil;
 
 import io.netty.channel.Channel;
@@ -21,71 +23,128 @@ import io.netty.channel.ChannelHandlerContext;
  */
 public class TransportServerHandler {
 
-	private static final String TAG = "TransportServerHandler";
-
 	private static final Logger LOGGER = LoggerFactory.getLogger(TransportServerHandler.class);
+
+
+	public TransportServerHandler() {
+
+	}
+
+	// 文件传输监听器
+	private FileTransportListener fileLisenter = new FileTransportListener() {
+
+		@Override
+		public void onProgress(double progress, long totalSize) {
+
+		}
+
+		@Override
+		public void onExceptionCaught(String exception) {
+
+		}
+
+		@Override
+		public void onComplete(boolean isSuccess, String tempPath) throws IOException {
+
+		}
+
+	};
 
 	public void handleMessage(ChannelHandlerContext ctx, Message msg) {
 
 		String action = msg.getAction();
+		LOGGER.debug("action:" + action);
 		if (action != null) {
-
 			switch (action) {
 			// 下载请求
-			case "fileDownloadRequest":
+			case Message.Action.FILE_DOWNLOAD_REQUEST:
 				handleFileDownloadRequest(ctx, msg);
 				break;
 
 			// 处理下载结果
-			case "fileDownloadResult":
+			case Message.Action.FILE_DOWNLOAD_RESULT:
 				handleFileDownloadResult(ctx, msg);
 				break;
 
 			// 处理上传请求
-			case "fileUploadRequest":
+			case Message.Action.FILE_UPLOAD_REQUEST:
 				handleFileUploadRequest(ctx, msg);
 				break;
 
-			// 处理分段上传响应
-			case "fileUploadSegment":
-				handleFileUploadSegment(ctx, msg);
+			// 上传完成
+			case Message.Action.FILE_UPLOAD_RESPONSE:
+				try {
+					handleFileUploadResponse(ctx, msg);
+				} catch (IOException e) {
+					e.printStackTrace();
+				}
+				break;
+			// 处理重新上传请求
+			case Message.Action.FILE_RE_UPLOAD_REQUEST:
+				handleReUploadRequest(ctx, msg);
 				break;
 			}
 		}
-
 	}
 
 	/**
-	 * 处理分段上传响应
+	 * 处理重新上传请求
 	 * 
 	 * @param ctx
 	 * @param msg
+	 * @throws IOException
 	 */
-	private void handleFileUploadSegment(ChannelHandlerContext ctx, Message msg) {
+	private void handleReUploadRequest(ChannelHandlerContext ctx, Message msg) {
 
-		System.out.println("handleFileUploadSegment " + msg);
+		String key = MD5Util.getTempFileKey(msg);
+		String tempPath = SharedPreferenceUtil.get(key);
+		File tempFile = new File(tempPath);
+		// 删除临时文件记录
+		SharedPreferenceUtil.remove(key);
+		// 删除临时文件
+		tempFile.delete();
 
-		long fileLength = msg.getFile().getFileLength();
-		long fileOffset = msg.getFile().getFileOffset();
-		long segmentLength = msg.getFile().getSegmentLength();
-
-		if (fileOffset + segmentLength < fileLength) {
-			Message rm = new Message();
-			rm.setAction("fileUploadSegmentResult");
-			rm.addParam("result", "success");
-
-			Message.File file = msg.getFile();
-			file.setFileOffset(fileOffset + segmentLength);
-			rm.setFile(file);
-
-			response(rm, ctx.channel());
-		} else {
-			Message rm = new Message();
-			rm.setAction("fileUploadResult");
-			rm.addParam("result", Message.Result.SUCCESS);
-
-			response(rm, ctx.channel());
+		// 首次上传做准备
+		System.out.println("first handleFileUploadRequest:" + Message.Action.FILE_RE_UPLOAD_REQUEST);
+		try {
+			handleUploadRequest(ctx, msg);
+		} catch (IOException e) {
+			e.printStackTrace();
 		}
+	}
+
+	/**
+	 * 处理上传结果
+	 * 
+	 * @param ctx
+	 * @param msg
+	 * @throws IOException
+	 */
+	private void handleFileUploadResponse(ChannelHandlerContext ctx, Message msg) throws IOException {
+
+		// 上传成功的消息
+		msg.setAction(Message.Action.FILE_UPLOAD_RESULT);
+		msg.setResponse(Message.Response.SUCCESS);
+		msg.getFile().setFileOffset(msg.getFile().getFileLength());
+		msg.setHasFileData(false);
+		
+		response(msg, ctx.channel());
+
+		String tempFileKey = MD5Util.getTempFileKey(msg);
+		String tempPath = SharedPreferenceUtil.get(tempFileKey);
+		File tempFile = new File(tempPath);
+		
+		tempFile.renameTo(new File("G:\\"+msg.getFile().getFileName()));
+		// 删除临时文件记录
+		SharedPreferenceUtil.remove(tempFileKey);
+
+		String fileName = msg.getFile().getFileName();
+		System.out.println("fileName:" + fileName);
+
+		// 删除临时文件
+		deleteTempFile(tempFile.getAbsolutePath());
+
+		System.out.println("文件" + fileName + "上传成功！！！");
 	}
 
 	/**
@@ -93,76 +152,96 @@ public class TransportServerHandler {
 	 * 
 	 * @param ctx
 	 * @param msg
+	 * @throws IOException
 	 */
 	private void handleFileUploadRequest(ChannelHandlerContext ctx, Message msg) {
 
-		String tempPath = SharedPreferenceUtil.get(msg.getParam("fileName"));
-		System.out.println("handleFileUploadRequest tempPath " + tempPath);
+		String path = SharedPreferenceUtil.get(MD5Util.getTempFileKey(msg));
+		LOGGER.debug("handleFileUploadRequest tempPath " + path);
+		File file = null;
+		if (path != null) {
+			file = new File(path);
+		}
 		// 获取已上传的内容，
-		if (tempPath != null) {
-			File file = new File(tempPath);
-			if (file.exists()) {
-				System.out.println("file is exist");
+		if (path != null && file.exists()) {
+			RandomAccessFile raf = null;
+			try {
+				raf = new RandomAccessFile(file, "rw");
+				FileLock lock = raf.getChannel().tryLock();
+				// 没有被其他线程加锁，可以写
+				if (lock != null && lock.isValid()) {
+					lock.release();
+					raf.close();
+
+					msg.setAction(Message.Action.FILE_UPLOAD_RESPONSE);
+					msg.setResponse(Message.Response.FILE_READY);
+					msg.getFile().setFileOffset(file.length());
+					msg.setHasFileData(false);
+
+					System.out.println("handleFileUploadRequest:" + Message.Action.FILE_UPLOAD_RESPONSE);
+
+					// 回应
+					response(msg, ctx.channel());
+				} else {
+					LOGGER.error("file do not get lock");
+					// 该文件被其他线程加锁，不可写
+					raf.close();
+
+					msg.setAction(Message.Action.FILE_UPLOAD_RESPONSE);
+					msg.setResponse(Message.Response.FILE_LOCKED);
+					msg.setHasFileData(false);
+					// 回应
+					response(msg, ctx.channel());
+				}
+			} catch (Exception e) {
+				LOGGER.debug(e.getMessage());
 				try {
-					RandomAccessFile raf = new RandomAccessFile(file, "rw");
-					System.out.println("handleFileUploadRequest tryLock:");
-					FileLock lock = raf.getChannel().tryLock();
-					System.out.println("handleFileUploadRequest lock:" + lock);
-					// 没有被其他线程加锁，可以写
-					if (lock != null && lock.isValid()) {
-						System.out.println("file get lock");
-
-						lock.release();
+					if (raf != null) {
 						raf.close();
-
-						Message rm = new Message();
-						rm.setAction("fileUploadAck");
-						rm.addParam("ack", Message.Ack.FILE_READY);
-						rm.setFile(msg.getFile());
-						msg.getFile().setFileOffset(file.length());
-
-						// 回应
-						response(rm, ctx.channel());
-					} else {
-						System.out.println("file do not get lock");
-						// 该文件被其他线程加锁，不可写
-						raf.close();
-
-						Message rm = new Message();
-						rm.setAction("fileUploadAck");
-						rm.addParam("ack", Message.Ack.FILE_LOCKED);
-						rm.setFile(msg.getFile());
-
-						// 回应
-						response(rm, ctx.channel());
 					}
-				} catch (IOException e) {
-					e.printStackTrace();
-
-					System.out.println(e.getLocalizedMessage());
+				} catch (IOException e1) {
+					e1.printStackTrace();
 				}
 
-			} else {
-
-				Message rm = new Message();
-				rm.setAction("fileUploadAck");
-				rm.addParam("ack", Message.Ack.FILE_READY);
-				rm.setFile(msg.getFile());
-				rm.getFile().setFileOffset(0);
-				
+				LOGGER.debug("file is locked");
+				msg.setAction(Message.Action.FILE_UPLOAD_RESPONSE);
+				msg.setResponse(Message.Response.FILE_LOCKED);
+				msg.setHasFileData(false);
 				// 回应
-				response(rm, ctx.channel());
+				response(msg, ctx.channel());
 			}
 		} else {
-			Message rm = new Message();
-			rm.setAction("fileUploadAck");
-			rm.addParam("ack", Message.Ack.FILE_READY);
-			rm.setFile(msg.getFile());
-			rm.getFile().setFileOffset(0);
-			// 回应
-			response(rm, ctx.channel());
+			// 首次上传做准备
+			System.out.println("first handleFileUploadRequest:" + Message.Action.FILE_UPLOAD_RESPONSE);
+			try {
+				handleUploadRequest(ctx, msg);
+			} catch (IOException e) {
+				e.printStackTrace();
+			}
 		}
+	}
 
+	/**
+	 * 首次上传做准备
+	 * 
+	 * @param ctx
+	 * @param msg
+	 * @throws IOException
+	 */
+	private void handleUploadRequest(ChannelHandlerContext ctx, Message msg) throws IOException {
+
+		LOGGER.debug("Receive upload request:" + msg);
+		LOGGER.debug("收到客户端上传请求! 消息来自:" + ctx.channel().remoteAddress().toString());
+
+		String fileName = msg.getFile().getFileName();
+		LOGGER.debug("fileName : " + fileName);
+
+		msg.setAction(Message.Action.FILE_UPLOAD_RESPONSE);
+		msg.setResponse(Message.Response.FILE_READY);
+		msg.getFile().setFileOffset(0);
+		msg.setHasFileData(false);
+		// 回应
+		response(msg, ctx.channel());
 	}
 
 	/**
@@ -170,32 +249,22 @@ public class TransportServerHandler {
 	 * 
 	 * @param ctx
 	 * @param msg
+	 * @throws IOException
 	 */
 	private void handleFileDownloadResult(ChannelHandlerContext ctx, Message msg) {
 
-		String result = msg.getParam("result");
-		if (result.equals(Message.Result.SUCCESS)) {
+		String response = msg.getResponse();
+		if (response.equals(Message.Response.SUCCESS)) {
 
-			System.out.println("下载成功！！！！！！");
+			System.out.println("文件" + msg.getFile().getFileName() + "下载成功！！！！！！");
 			ctx.close();
-		} else if (result.equals(Message.Result.FILE_MD5_WRONG)) {
+		} else if (response.equals(Message.Response.FILE_MD5_WRONG)) {
 			// 重新传输
-			String fileName = msg.getFile().getFileName();
-			if (fileName != null) {
+			msg.setAction(Message.Action.FILE_DOWNLOAD_REQUEST);
+			msg.setResponse("");
+			msg.getFile().setFileOffset(0);
 
-				String filePath = "G:\\20190125-6.zip";
-
-				Message responseMsg = new Message();
-				responseMsg.setAction("fileDownloadAck");
-				responseMsg.setHasFileData(true);
-				responseMsg.setFile(msg.getFile());
-				responseMsg.getFile().setFileOffset(0);
-				responseMsg.getFile().setFilePath(filePath);
-
-				LOGGER.debug("responseMsg:" + responseMsg);
-				response(responseMsg, ctx.channel());
-
-			}
+			handleMessage(ctx, msg);
 		}
 	}
 
@@ -207,19 +276,12 @@ public class TransportServerHandler {
 	 */
 	private void handleFileDownloadRequest(ChannelHandlerContext ctx, Message msg) {
 
-		String fileName = msg.getFile().getFileName();
-		if (fileName != null) {
-
-			String filePath = "G:\\20190125-6.zip";
-
-			msg.setAction("fileDownloadAck");
-			msg.addParam("ack", Message.Ack.FILE_READY);
-			msg.setHasFileData(true);
-			msg.getFile().setFilePath(filePath);
-
-			response(msg, ctx.channel());
-
-		}
+		msg.setAction(Message.Action.FILE_DOWNLOAD_RESPONSE);
+		msg.setResponse(Message.Response.FILE_READY);
+		msg.setHasFileData(true);
+		msg.getFile().setFilePath("G:/20190226-5.zip");
+		response(msg, ctx.channel());
+		
 	}
 
 	/**
@@ -237,13 +299,53 @@ public class TransportServerHandler {
 			@Override
 			public void operationComplete(ChannelFuture channelFuture) {
 				if (channelFuture.isSuccess()) {
-					System.out.println("TransportServerHandler writeAndFlush success msg" + msg);
+					LOGGER.error("TransportServerHandler writeAndFlush success ");
 				} else {
-					System.out.println("TransportServerHandler writeAndFlush failure");
-					System.out.println(channelFuture.cause().getMessage());
+					LOGGER.error("TransportServerHandler writeAndFlush failure");
+					LOGGER.error(channelFuture.cause().getMessage());
 				}
 			}
 		});
+	}
+
+	private void deleteTempFile(String absolutePath) {
+
+		File file = new File(absolutePath);
+		try {
+			FileWriter writer = new FileWriter(file);
+			writer.write("");
+			writer.close();
+		} catch (IOException e) {
+			e.printStackTrace();
+		}
+
+		File tempFolder = new File(System.getProperty("user.dir") + "\\temp");
+		File[] files = tempFolder.listFiles();
+		for (int i = 0; i < files.length; i++) {
+			if (files[i].getName().equals("tempPath.sp")) {
+				continue;
+			}
+
+			if (!SharedPreferenceUtil.containValue(files[i].getAbsolutePath())) {
+				files[i].delete();
+			}
+		}
+
+	}
+
+	public FileTransportListener getFileLisenter() {
+		return fileLisenter;
+	}
+
+	/*
+	 * 通道断了
+	 */
+	public void onChannelInactive(ChannelHandlerContext ctx) throws IOException {
+
+	}
+
+	public void userEventTriggered(ChannelHandlerContext ctx, Object evt) throws Exception {
+
 	}
 
 }

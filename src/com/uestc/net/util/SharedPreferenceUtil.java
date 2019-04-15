@@ -3,6 +3,8 @@ package com.uestc.net.util;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.RandomAccessFile;
+import java.util.HashMap;
+
 import com.alibaba.fastjson.JSON;
 
 /**
@@ -13,7 +15,6 @@ import com.alibaba.fastjson.JSON;
  */
 public class SharedPreferenceUtil {
 
-	
 	/**
 	 * 保存
 	 * 
@@ -147,6 +148,51 @@ public class SharedPreferenceUtil {
 		Exception e) {
 			e.printStackTrace();
 		}
+	}
+
+	/**
+	 * 
+	 * @param absoluteFile
+	 * @return
+	 */
+	public static boolean containValue(String value) {
+
+		try {
+			SharedPreference sp;
+
+			File file = new File(SharedPreference.savePath);
+			if (!file.exists() || file.length() == 0) {
+				return false;
+			}
+
+			long length = file.length();
+			RandomAccessFile raf = new RandomAccessFile(file, "rw");
+
+			// 读出已有的内容
+			byte[] bytes = new byte[(int) length];
+			raf.read(bytes);
+			raf.close();
+
+			String json = new String(bytes);
+			sp = JSON.parseObject(json, SharedPreference.class);
+			if (sp == null) {
+				return false;
+			}
+
+			HashMap<String, String> map = sp.getSpMap();
+			for (String key : map.keySet()) {
+				String v = map.get(key);
+				if (v.equals(value)) {
+					return true;
+				}
+			}
+
+		} catch (
+
+		Exception e) {
+			e.printStackTrace();
+		}
+		return false;
 	}
 
 }

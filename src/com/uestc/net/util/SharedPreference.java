@@ -12,7 +12,7 @@ public class SharedPreference {
 
 	private HashMap<String, String> spMap = new HashMap<>();
 
-	public static String savePath = "G:\\tempFilePath.sp";
+	public static String savePath = "G:\\temp\\tempPath.sp";
 
 	public void put(String key, String value) {
 		spMap.put(key, value);
@@ -29,9 +29,6 @@ public class SharedPreference {
 	public void clear() {
 		spMap.clear();
 	}
-	
-	
-
 
 	@Override
 	public String toString() {
@@ -45,6 +42,5 @@ public class SharedPreference {
 	public void setSpMap(HashMap<String, String> spMap) {
 		this.spMap = spMap;
 	}
-	
-	
+
 }

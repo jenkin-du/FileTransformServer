@@ -6,6 +6,8 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.RandomAccessFile;
 import org.apache.commons.codec.digest.DigestUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.ChannelHandlerContext;
@@ -22,8 +24,10 @@ import io.netty.handler.codec.MessageToByteEncoder;
  */
 public class TransportFrameEncoder extends MessageToByteEncoder<Message> {
 
+	private static final Logger LOGGER = LoggerFactory.getLogger(TransportFrameEncoder.class);
+	
 	// 分段下载，每段100M
-	private static final int SEGMENT_LENGTH = 1024 * 1024 * 100;
+	private static final int SEGMENT_LENGTH = 1024 * 1024 * 50;
 
 	private RandomAccessFile raf;
 
@@ -44,7 +48,6 @@ public class TransportFrameEncoder extends MessageToByteEncoder<Message> {
 				message.getFile().setMd5(md5);
 
 				long offset = message.getFile().getFileOffset();
-				System.out.println("TransportFrameEncoder encode: offset:" + offset);
 
 				raf = new RandomAccessFile(new File(filePath), "rw");
 				// 跳过已读的字节数
@@ -57,17 +60,14 @@ public class TransportFrameEncoder extends MessageToByteEncoder<Message> {
 					long segmentLength = fileLength - offset;
 					if (segmentLength >= 0) {
 						message.getFile().setSegmentLength(segmentLength);
-						message.setAction("fileDownloadAck");
-						message.addParam("ack",Message.Ack.FILE_READY);
+						message.setAction(Message.Action.FILE_DOWNLOAD_RESPONSE);
+						message.setResponse(Message.Response.FILE_READY);
 
 						// 转化为json格式的支付串
 						String jsonMessage = JSON.toJSONString(message);
 						byte[] byteMsg = jsonMessage.getBytes();
 						int msgLength = byteMsg.length;
-
-						System.out.println("TransportFrameEncoder encode: jsonMessage:" + jsonMessage);
-						System.out.println("TransportFrameEncoder encode: msgLength = " + msgLength);
-
+						LOGGER.debug("TransportFrameEncoder encode: jsonMessage:" + jsonMessage);
 						// 写入参数
 						out.writeInt(msgLength);
 						out.writeBytes(byteMsg);
@@ -76,28 +76,27 @@ public class TransportFrameEncoder extends MessageToByteEncoder<Message> {
 							out.writeBytes(bytes);
 						}
 
-						System.out.println("TransportFrameEncoder encode: write end!!!");
+						LOGGER.debug("write end");
 						raf.close();
 					} else {
 
-						message.setAction("fileDownloadAck");
-						message.addParam("ack", Message.Ack.FILE_ENCODE_WRONG);
-						message.setHasFileData(false);	
+						message.setAction(Message.Action.FILE_DOWNLOAD_RESPONSE);
+						message.setResponse(Message.Response.FILE_ENCODE_WRONG);
+						message.setHasFileData(false);
 
 						channelHandlerContext.channel().writeAndFlush(message);
 					}
 
 				} else {
-					message.setAction("fileDownloadSegmentAck");
+					message.setAction(Message.Action.FILE_DOWNLOAD_SEGMENT_RESPONSE);
+					message.setResponse(Message.Response.FILE_READY);
 					message.getFile().setSegmentLength(SEGMENT_LENGTH);
 					// 转化为json格式的支付串
 					String jsonMessage = JSON.toJSONString(message);
 					byte[] byteMsg = jsonMessage.getBytes();
 					int msgLength = byteMsg.length;
 
-					System.out.println("TransportFrameEncoder encode: jsonMessage:" + jsonMessage);
-					System.out.println("TransportFrameEncoder encode: msgLength = " + msgLength);
-
+					LOGGER.debug("TransportFrameEncoder encode: jsonMessage:" + jsonMessage);
 					// 写入参数
 					out.writeInt(msgLength);
 					out.writeBytes(byteMsg);
@@ -108,26 +107,24 @@ public class TransportFrameEncoder extends MessageToByteEncoder<Message> {
 							out.writeBytes(bytes);
 						}
 					}
+					raf.close();
+					LOGGER.debug("write end");
 
-					System.out.println("TransportFrameEncoder encode: write end!!!");
 				}
 
-				raf.close();
+				
 			} else {
 				// 下载文件没找到
-				if (message.getAction().equals("fileDownloadAck")) {
-					message.addParam("ack", Message.Ack.FILE_NOT_EXIST);
+				if (message.getAction().equals(Message.Action.FILE_DOWNLOAD_RESPONSE)) {
+					message.setResponse(Message.Response.FILE_NOT_EXIST);
 					message.setHasFileData(false);
 
 					// 转化为json格式的支付串
 					String jsonMessage = JSON.toJSONString(message);
-
-					System.out.println("TransportFrameEncoder encode: jsonMessage:" + jsonMessage);
+					LOGGER.debug("TransportFrameEncoder encode: jsonMessage:" + jsonMessage);
 
 					byte[] byteMsg = jsonMessage.getBytes();
 					int msgLength = byteMsg.length;
-
-					System.out.println("TransportFrameEncoder encode: msgLength = " + msgLength);
 
 					// 写入参数
 					out.writeInt(msgLength);
@@ -140,16 +137,15 @@ public class TransportFrameEncoder extends MessageToByteEncoder<Message> {
 			// 转化为json格式的支付串
 			String jsonMessage = JSON.toJSONString(message);
 
-			System.out.println("TransportFrameEncoder encode: jsonMessage:" + jsonMessage);
+			LOGGER.debug("TransportFrameEncoder encode: jsonMessage:" + jsonMessage);
 
 			byte[] byteMsg = jsonMessage.getBytes();
 			int msgLength = byteMsg.length;
 
-			System.out.println("TransportFrameEncoder encode: msgLength = " + msgLength);
-
 			// 写入参数
 			out.writeInt(msgLength);
 			out.writeBytes(byteMsg);
+			
 		}
 	}
 
